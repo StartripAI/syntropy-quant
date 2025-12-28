@@ -180,7 +180,9 @@ class GaugeFieldKernel(nn.Module):
         return logits, free_energy, confidence
 
     def process_step(self, features: np.ndarray, dt: float = 1.0) -> GaugeKernelOutput:
-        x = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
+        x = torch.tensor(features, dtype=torch.float32)
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
         logits, free_energy, confidence = self.forward(x, dt=dt)
 
         logit_delta = (logits[:, 2] - logits[:, 0]).mean() - self.config.signal_bias
