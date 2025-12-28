@@ -60,6 +60,7 @@ class DissipativeSymplecticUnit(nn.Module):
     def forward(self, q, p, dt):
         state = torch.cat([q, p], dim=-1)
         gamma = self.damping_net(state) * self.damping_scale
+        gamma = torch.clamp(gamma, -1.5, 1.5)
         
         # Semi-Implicit Symplectic Euler
         # 1. Update Momentum: p(t+1) = p(t) + F(q(t)) * dt - Friction

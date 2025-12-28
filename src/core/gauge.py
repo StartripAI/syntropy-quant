@@ -26,7 +26,7 @@ class GaugeConfig:
     num_paths: int = 32
     dt: float = 1.0
     noise_scale: float = 0.6
-    free_energy_scale: float = 0.12
+    free_energy_scale: float = 0.08
     curvature_scale: float = 0.1
     signal_scale: float = 4.5
     signal_bias: float = 0.0

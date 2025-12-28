@@ -80,7 +80,7 @@ class FeatureBuilder:
         df.columns = [c.lower() for c in df.columns]
 
         if len(df) < self.warmup + 10:
-            return np.zeros((len(df), 12))
+            return np.zeros((len(df), 14))
 
         epsilon = 1e-8
         close = df['close'].values
@@ -90,7 +90,7 @@ class FeatureBuilder:
         open_ = df['open'].values if 'open' in df.columns else close
 
         n = len(close)
-        features = np.zeros((n, 12))
+        features = np.zeros((n, 14))
 
         # 1. Log Returns
         log_ret = np.zeros(n)
@@ -153,8 +153,18 @@ class FeatureBuilder:
         # 9. Price Position (mean reversion signal)
         features[:, 11] = (close - ma20) / (ma20 + epsilon)
 
+        # 10. Liquidity density (log-volume z-score)
+        log_vol = np.log(volume + 1.0)
+        lv_mean = pd.Series(log_vol).rolling(20).mean().fillna(log_vol[0]).values
+        lv_std = pd.Series(log_vol).rolling(20).std().replace(0, 1).values
+        features[:, 12] = np.clip((log_vol - lv_mean) / (lv_std + epsilon), -5, 5)
+
+        # 11. Range intensity (scaled intraday range)
+        features[:, 13] = np.clip((high - low) / (close + epsilon), 0, 5)
+
         # Handle any remaining NaN/Inf
         features = np.nan_to_num(features, nan=0.0, posinf=5.0, neginf=-5.0)
+        features = np.clip(features, -5, 5)
 
         return features
 
