@@ -169,6 +169,12 @@ Train the gauge kernel on historical data (defaults to a full multi-sector unive
 python train_kernel.py --epochs 10 --save models/gauge_kernel.pt
 ```
 
+Multi-scale feature augmentation is enabled by default. Disable if needed:
+
+```bash
+python train_kernel.py --single-scale --epochs 10 --save models/gauge_kernel.pt
+```
+
 Optional: override provider priority:
 
 ```bash
@@ -187,10 +193,30 @@ Run backtest with a trained model:
 python run_backtest.py --kernel gauge --model models/gauge_kernel.pt
 ```
 
+Multi-scale backtest (three time scales). If the checkpoint was trained with multi-scale,
+this is auto-detected, but you can force it:
+
+```bash
+python run_backtest.py --kernel gauge --model models/gauge_kernel.pt --multi-scale
+```
+
+Single-scale backtest (disable multi-scale):
+
+```bash
+python run_backtest.py --kernel gauge --model models/gauge_kernel.pt --single-scale
+```
+
 Lower the trade threshold if you see zero trades:
 
 ```bash
 python run_backtest.py --kernel gauge --model models/gauge_kernel.pt --min-trade-threshold 0.005
+```
+
+Curvature–momentum coupling (alignment gate) can be tuned:
+
+```bash
+python run_backtest.py --kernel gauge --model models/gauge_kernel.pt \
+  --momentum-gate 0.15 --coupling-strength 0.65 --momentum-weights 0.5,0.3,0.2
 ```
 
 ## Data Providers (Open + Private)

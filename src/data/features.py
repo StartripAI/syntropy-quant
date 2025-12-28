@@ -1,212 +1,178 @@
-"""
-Feature Engineering Module
-
-Builds features for the physics-based kernel.
-Maps market data to phase space coordinates.
-"""
-
 import numpy as np
 import pandas as pd
-from typing import Optional, Tuple
+import torch
+from typing import Tuple
 
 
 class FeatureBuilder:
     """
-    Builds input features for the Syntropy Quant Kernel.
-
-    Features are designed to map to:
-    - Position (q): Mispricing, mean reversion signals
-    - Momentum (p): Trend, order flow signals
+    Robust Feature Engineering (v4.0).
+    Mathematical Safety: Epsilon stabilization for all divisions.
     """
 
-    def __init__(
-        self,
-        lookback_short: int = 5,
-        lookback_medium: int = 20,
-        lookback_long: int = 60
-    ):
-        self.lookback_short = lookback_short
-        self.lookback_medium = lookback_medium
-        self.lookback_long = lookback_long
-
-    def compute_returns(self, prices: np.ndarray) -> np.ndarray:
-        """Compute log returns"""
-        return np.diff(np.log(prices), prepend=np.log(prices[0]))
-
-    def compute_volatility(
-        self,
-        returns: np.ndarray,
-        window: int
-    ) -> np.ndarray:
-        """Compute rolling volatility"""
-        vol = np.zeros_like(returns)
-        for i in range(window, len(returns)):
-            vol[i] = np.std(returns[i-window:i]) * np.sqrt(252)
-        vol[:window] = vol[window] if len(vol) > window else 0.2
-        return vol
-
-    def compute_rsi(self, prices: np.ndarray, window: int = 14) -> np.ndarray:
-        """Compute RSI normalized to [-1, 1]"""
-        deltas = np.diff(prices, prepend=prices[0])
-        gains = np.maximum(deltas, 0)
-        losses = np.abs(np.minimum(deltas, 0))
-
-        avg_gain = np.zeros_like(prices)
-        avg_loss = np.zeros_like(prices)
-
-        for i in range(window, len(prices)):
-            avg_gain[i] = np.mean(gains[i-window:i])
-            avg_loss[i] = np.mean(losses[i-window:i])
-
-        rs = avg_gain / (avg_loss + 1e-10)
-        rsi = 100 - 100 / (1 + rs)
-
-        # Normalize to [-1, 1]
-        return (rsi - 50) / 50
-
-    def compute_macd(
-        self,
-        prices: np.ndarray,
-        fast: int = 12,
-        slow: int = 26,
-        signal: int = 9
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Compute MACD and signal line"""
-        ema_fast = self._ema(prices, fast)
-        ema_slow = self._ema(prices, slow)
-        macd = ema_fast - ema_slow
-        macd_signal = self._ema(macd, signal)
-        return macd, macd_signal
-
-    def _ema(self, data: np.ndarray, window: int) -> np.ndarray:
-        """Compute exponential moving average"""
-        alpha = 2 / (window + 1)
-        ema = np.zeros_like(data)
-        ema[0] = data[0]
-        for i in range(1, len(data)):
-            ema[i] = alpha * data[i] + (1 - alpha) * ema[i-1]
-        return ema
-
-    def compute_bollinger_position(
-        self,
-        prices: np.ndarray,
-        window: int = 20,
-        num_std: float = 2.0
-    ) -> np.ndarray:
+    def __init__(self, short_window: int = 5, mid_window: int = 20, long_window: int = 60):
         """
-        Compute position within Bollinger Bands.
-        Returns value in [-1, 1] where:
-        - -1 = at lower band
-        - 0 = at middle (SMA)
-        - 1 = at upper band
+        Initialize with configurable windows for multi-scale analysis.
+
+        Args:
+            short_window: Short-term lookback (default 5)
+            mid_window: Medium-term lookback (default 20)
+            long_window: Long-term lookback (default 60)
         """
-        position = np.zeros_like(prices)
+        self.short_window = short_window
+        self.mid_window = mid_window
+        self.long_window = long_window
+        self.warmup = max(short_window, mid_window, long_window)
 
-        for i in range(window, len(prices)):
-            window_prices = prices[i-window:i]
-            sma = np.mean(window_prices)
-            std = np.std(window_prices)
-
-            if std > 0:
-                z_score = (prices[i] - sma) / (num_std * std)
-                position[i] = np.clip(z_score, -1, 1)
-
-        return position
-
-    def compute_volume_clock(self, volume: np.ndarray) -> np.ndarray:
-        """
-        Compute volume clock (relativistic time).
-        Higher volume = faster time evolution.
-        """
-        mean_vol = np.mean(volume)
-        return volume / (mean_vol + 1e-10)
-
-    def compute_order_flow(
-        self,
-        high: np.ndarray,
-        low: np.ndarray,
-        close: np.ndarray,
-        volume: np.ndarray
-    ) -> np.ndarray:
-        """
-        Estimate order flow from OHLC data.
-        Positive = buying pressure, Negative = selling pressure.
-        """
-        # Money flow multiplier
-        range_hl = high - low
-        clv = np.zeros_like(close)
-        numerator = (close - low) - (high - close)
-        np.divide(numerator, range_hl, out=clv, where=range_hl != 0)
-
-        # Money flow volume
-        mfv = clv * volume
-
-        return mfv / (np.abs(mfv).mean() + 1e-10)
-
-    def compute_trend_strength(
-        self,
-        prices: np.ndarray,
-        window: int = 20
-    ) -> np.ndarray:
-        """
-        Compute trend strength using linear regression slope.
-        """
-        strength = np.zeros_like(prices)
-
-        for i in range(window, len(prices)):
-            y = prices[i-window:i]
-            x = np.arange(window)
-            slope = np.polyfit(x, y, 1)[0]
-            strength[i] = slope / (np.std(y) + 1e-10)
-
-        return strength
+    def build(self, df: pd.DataFrame) -> torch.Tensor:
+        if len(df) < 30: return torch.empty(0)
+        
+        df = df.copy()
+        epsilon = 1e-8
+        
+        # 1. Log Returns (Scale Invariant)
+        close = df['Close'].values
+        log_ret = np.diff(np.log(close + epsilon), prepend=close[0])
+        
+        # 2. Volatility (Local Energy)
+        vol = pd.Series(log_ret).rolling(20).std().fillna(0).values
+        
+        # 3. Order Flow / Momentum
+        # Avoid High==Low singularity (CRITICAL FIX)
+        hl_range = df['High'].values - df['Low'].values
+        hl_range = np.maximum(hl_range, epsilon) 
+        
+        # Close Location Value
+        clv = ((close - df['Low'].values) - (df['High'].values - close)) / hl_range
+        flow = clv * np.log(df['Volume'].values + 1.0)
+        
+        # Normalize Flow (Z-Score)
+        flow_mean = pd.Series(flow).rolling(20).mean().fillna(0).values
+        flow_std = pd.Series(flow).rolling(20).std().replace(0, 1).values
+        momentum = (flow - flow_mean) / (flow_std + epsilon)
+        momentum = np.clip(momentum, -5, 5) # Clip outliers
+        
+        # 4. Potential Well (Mean Reversion)
+        ma20 = pd.Series(close).rolling(20).mean().fillna(close[0]).values
+        position = (close - ma20) / (ma20 + epsilon) * 100
+        
+        # Stack: [LogRet, Vol, Momentum, Position]
+        features = np.stack([log_ret, vol, momentum, position], axis=1)
+        
+        # Drop initial NaN window
+        return torch.tensor(features[20:], dtype=torch.float32)
 
     def build_features(self, df: pd.DataFrame) -> np.ndarray:
         """
-        Build full feature set from OHLCV data.
+        Build features for backtest engine (numpy array output).
+        Extended feature set for regime detection and momentum analysis.
+
+        Args:
+            df: OHLCV DataFrame with columns [open, high, low, close, volume]
 
         Returns:
-            Array of shape [n_samples, 12]
+            np.ndarray of shape (n_samples, n_features)
         """
-        prices = df['close'].values
+        # Normalize column names
+        df = df.copy()
+        df.columns = [c.lower() for c in df.columns]
+
+        if len(df) < self.warmup + 10:
+            return np.zeros((len(df), 12))
+
+        epsilon = 1e-8
+        close = df['close'].values
         high = df['high'].values
         low = df['low'].values
         volume = df['volume'].values
+        open_ = df['open'].values if 'open' in df.columns else close
 
-        # Compute all features
-        returns = self.compute_returns(prices)
-        vol_short = self.compute_volatility(returns, self.lookback_short)
-        vol_medium = self.compute_volatility(returns, self.lookback_medium)
+        n = len(close)
+        features = np.zeros((n, 12))
 
-        rsi = self.compute_rsi(prices)
-        macd, macd_signal = self.compute_macd(prices)
-        bb_pos = self.compute_bollinger_position(prices)
+        # 1. Log Returns
+        log_ret = np.zeros(n)
+        log_ret[1:] = np.diff(np.log(close + epsilon))
+        features[:, 0] = log_ret
 
-        volume_clock = self.compute_volume_clock(volume)
-        order_flow = self.compute_order_flow(high, low, prices, volume)
-        trend = self.compute_trend_strength(prices)
+        # 2. Volatility (short, mid, long)
+        for i in range(self.short_window, n):
+            features[i, 1] = np.std(log_ret[max(0, i-self.short_window):i]) * np.sqrt(252)
+        for i in range(self.mid_window, n):
+            features[i, 2] = np.std(log_ret[max(0, i-self.mid_window):i]) * np.sqrt(252)
 
-        # Combine into feature matrix
-        features = np.column_stack([
-            returns,                      # 0: Raw return
-            returns * 10,                 # 1: Scaled return (momentum proxy)
-            vol_short,                    # 2: Short-term volatility
-            vol_medium,                   # 3: Medium-term volatility
-            rsi,                          # 4: RSI (mean reversion)
-            macd / (np.std(macd) + 1e-8), # 5: MACD normalized
-            (macd - macd_signal) / (np.std(macd) + 1e-8),  # 6: MACD histogram
-            bb_pos,                       # 7: Bollinger position
-            volume_clock,                 # 8: Volume clock
-            order_flow,                   # 9: Order flow
-            trend,                        # 10: Trend strength
-            np.gradient(vol_medium)       # 11: Volatility change
-        ])
+        # 3. RSI (Relative Strength Index)
+        delta = np.diff(close, prepend=close[0])
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gain).rolling(14).mean().fillna(0).values
+        avg_loss = pd.Series(loss).rolling(14).mean().fillna(epsilon).values
+        rs = avg_gain / (avg_loss + epsilon)
+        features[:, 3] = (100 - 100 / (1 + rs)) / 100 - 0.5  # Centered RSI
 
-        # Handle NaNs
-        features = np.nan_to_num(features, 0)
+        # 4. MACD
+        ema12 = pd.Series(close).ewm(span=12).mean().values
+        ema26 = pd.Series(close).ewm(span=26).mean().values
+        macd_line = ema12 - ema26
+        signal_line = pd.Series(macd_line).ewm(span=9).mean().values
+        features[:, 4] = macd_line / (close + epsilon)  # Normalized MACD
+        features[:, 5] = signal_line / (close + epsilon)
+        features[:, 6] = (macd_line - signal_line) / (close + epsilon)  # MACD histogram
+
+        # 5. Bollinger Band Position
+        ma20 = pd.Series(close).rolling(20).mean().fillna(close[0]).values
+        std20 = pd.Series(close).rolling(20).std().fillna(1).values
+        upper_band = ma20 + 2 * std20
+        lower_band = ma20 - 2 * std20
+        bb_width = upper_band - lower_band
+        features[:, 7] = (close - lower_band) / (bb_width + epsilon) - 0.5  # BB position
+
+        # 6. Volume Profile
+        hl_range = np.maximum(high - low, epsilon)
+        clv = ((close - low) - (high - close)) / hl_range
+        vol_flow = clv * np.log(volume + 1)
+        vol_mean = pd.Series(vol_flow).rolling(20).mean().fillna(0).values
+        vol_std = pd.Series(vol_flow).rolling(20).std().replace(0, 1).values
+        features[:, 8] = np.clip((vol_flow - vol_mean) / (vol_std + epsilon), -5, 5)
+
+        # 7. Order Flow Imbalance
+        features[:, 9] = clv  # Raw CLV as order flow proxy
+
+        # 8. Trend Strength (ADX proxy)
+        tr = np.maximum(high - low, np.maximum(np.abs(high - np.roll(close, 1)),
+                                                np.abs(low - np.roll(close, 1))))
+        atr = pd.Series(tr).rolling(14).mean().fillna(epsilon).values
+        dm_plus = np.maximum(high - np.roll(high, 1), 0)
+        dm_minus = np.maximum(np.roll(low, 1) - low, 0)
+        di_plus = pd.Series(dm_plus / (atr + epsilon)).rolling(14).mean().fillna(0).values
+        di_minus = pd.Series(dm_minus / (atr + epsilon)).rolling(14).mean().fillna(0).values
+        features[:, 10] = (di_plus - di_minus) / (di_plus + di_minus + epsilon)  # DX normalized
+
+        # 9. Price Position (mean reversion signal)
+        features[:, 11] = (close - ma20) / (ma20 + epsilon)
+
+        # Handle any remaining NaN/Inf
+        features = np.nan_to_num(features, nan=0.0, posinf=5.0, neginf=-5.0)
 
         return features
 
     def get_dt_series(self, df: pd.DataFrame) -> np.ndarray:
-        """Get time step series based on volume clock"""
-        return self.compute_volume_clock(df['volume'].values)
+        """
+        Compute time delta series (for volume-clock integration).
+
+        Returns array of time deltas normalized by average.
+        """
+        if not hasattr(df.index, 'to_pydatetime'):
+            # Numeric index - assume uniform spacing
+            return np.ones(len(df))
+
+        try:
+            times = pd.to_datetime(df.index)
+            deltas = times.diff().dt.total_seconds().fillna(86400).values
+            # Normalize by median
+            median_dt = np.median(deltas[deltas > 0])
+            if median_dt > 0:
+                return deltas / median_dt
+            return np.ones(len(df))
+        except Exception:
+            return np.ones(len(df))

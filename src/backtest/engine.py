@@ -4,6 +4,7 @@ Backtesting Engine
 Simulates trading strategies on historical data.
 """
 
+import copy
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
@@ -33,6 +34,11 @@ class BacktestConfig:
     min_hold_period: int = 1
     signal_window: int = 1
     confidence_threshold: float = 0.0
+    multi_scale: bool = False
+    scale_windows: Tuple[Tuple[int, int, int], ...] = ((3, 10, 30), (5, 20, 60), (10, 40, 120))
+    momentum_weights: Tuple[float, float, float] = (0.5, 0.3, 0.2)
+    momentum_gate: float = 0.15
+    coupling_strength: float = 0.65
 
 
 @dataclass
@@ -62,6 +68,45 @@ class BacktestEngine:
     def __init__(self, config: Optional[BacktestConfig] = None):
         self.config = config or BacktestConfig()
         self.feature_builder = FeatureBuilder()
+
+    def _compute_momentum_score(self, feature_row: np.ndarray) -> float:
+        if feature_row.shape[0] <= 10:
+            return 0.0
+        trend = feature_row[10]
+        macd_hist = feature_row[6]
+        order_flow = feature_row[9]
+        w_trend, w_macd, w_flow = self.config.momentum_weights
+        score = w_trend * trend + w_macd * macd_hist + w_flow * order_flow
+        return float(np.tanh(score))
+
+    def _apply_curvature_momentum_gate(
+        self,
+        signal: float,
+        momentum_score: float,
+        curvature: float
+    ) -> float:
+        if signal == 0.0:
+            return 0.0
+        gate = self.config.momentum_gate
+        if curvature <= gate:
+            return signal
+        curv_intensity = (curvature - gate) / max(gate, 1e-6)
+        curv_intensity = float(np.clip(curv_intensity, 0.0, 1.0))
+        momentum_strength = min(1.0, abs(momentum_score))
+        alignment = np.sign(momentum_score) * np.sign(signal)
+        penalty = self.config.coupling_strength * curv_intensity * (1.0 - momentum_strength)
+        if alignment < 0:
+            penalty += self.config.coupling_strength * curv_intensity
+        adjusted = signal * (1.0 - penalty)
+        return float(np.clip(adjusted, -1.0, 1.0))
+
+    @staticmethod
+    def _combine_regimes(regimes: List[str]) -> str:
+        if "crisis" in regimes:
+            return "crisis"
+        if "high_vol" in regimes:
+            return "high_vol"
+        return "normal"
 
     def _build_kernel(self, input_dim: int):
         """Instantiate kernel based on configuration."""
@@ -117,15 +162,30 @@ class BacktestEngine:
         Returns:
             BacktestResult with all metrics
         """
-        # Build features
-        features = self.feature_builder.build_features(df)
-        dt_series = self.feature_builder.get_dt_series(df)
+        # Build features (single or multi-scale)
+        if self.config.multi_scale:
+            builders = [FeatureBuilder(*window) for window in self.config.scale_windows]
+        else:
+            builders = [self.feature_builder]
 
-        # Initialize kernel
-        kernel = self._build_kernel(input_dim=features.shape[1])
-        if hasattr(kernel, "feature_mean") and hasattr(kernel, "feature_std"):
-            std = np.where(kernel.feature_std == 0, 1.0, kernel.feature_std)
-            features = (features - kernel.feature_mean) / std
+        feature_sets = [builder.build_features(df) for builder in builders]
+        dt_series = builders[0].get_dt_series(df)
+
+        # Initialize kernels (one per scale)
+        base_kernel = self._build_kernel(input_dim=feature_sets[0].shape[1])
+        if self.config.multi_scale:
+            kernels = [copy.deepcopy(base_kernel) for _ in feature_sets]
+        else:
+            kernels = [base_kernel]
+
+        # Apply normalization if available
+        if hasattr(base_kernel, "feature_mean") and hasattr(base_kernel, "feature_std"):
+            std = np.where(base_kernel.feature_std == 0, 1.0, base_kernel.feature_std)
+            feature_sets = [(features - base_kernel.feature_mean) / std for features in feature_sets]
+
+        for kernel in kernels:
+            kernel.eval()
+
         risk_manager = RiskManager(max_position=self.config.max_position)
 
         # Initialize tracking
@@ -154,9 +214,27 @@ class BacktestEngine:
             iterator = tqdm(iterator, desc=f'Backtesting {symbol}')
 
         for t in iterator:
-            # Get kernel output
+            # Get kernel output (multi-scale aggregation)
             dt_value = 1.0 if self.config.kernel_type == "gauge" else dt_series[t]
-            output = kernel.process_step(features[t], dt_value)
+            signals_per_scale: List[float] = []
+            confidences: List[float] = []
+            curvatures_step: List[float] = []
+            regimes_step: List[str] = []
+            momentum_scores: List[float] = []
+
+            for features, kernel in zip(feature_sets, kernels):
+                output = kernel.process_step(features[t], dt_value)
+                signals_per_scale.append(output.signal)
+                confidences.append(output.confidence)
+                curvatures_step.append(output.curvature)
+                regimes_step.append(output.regime)
+                momentum_scores.append(self._compute_momentum_score(features[t]))
+
+            avg_confidence = float(np.mean(confidences)) if confidences else 0.0
+            if confidences and float(np.sum(confidences)) > 0:
+                combined_signal = float(np.average(signals_per_scale, weights=np.clip(confidences, 1e-6, None)))
+            else:
+                combined_signal = float(np.mean(signals_per_scale)) if signals_per_scale else 0.0
 
             # Compute realized volatility
             if t > 20:
@@ -166,8 +244,8 @@ class BacktestEngine:
                 realized_vol = 0.2
 
             # Signal smoothing and confidence gating
-            effective_signal = output.signal * output.confidence
-            if output.confidence < self.config.confidence_threshold:
+            effective_signal = combined_signal * avg_confidence
+            if avg_confidence < self.config.confidence_threshold:
                 effective_signal = 0.0
 
             signal_buffer.append(effective_signal)
@@ -175,15 +253,24 @@ class BacktestEngine:
                 signal_buffer.pop(0)
             smoothed_signal = float(np.mean(signal_buffer))
 
+            curvature = float(np.max(curvatures_step)) if curvatures_step else 0.0
+            regime = self._combine_regimes(regimes_step)
+            momentum_score = float(np.mean(momentum_scores)) if momentum_scores else 0.0
+            smoothed_signal = self._apply_curvature_momentum_gate(
+                smoothed_signal,
+                momentum_score,
+                curvature
+            )
+
             # Risk-adjusted position
             pos_signal = risk_manager.compute_position_size(
                 smoothed_signal,
-                output.curvature,
+                curvature,
                 realized_vol
             )
 
             target_position = pos_signal.risk_adjusted_signal
-            if output.regime == "crisis":
+            if regime == "crisis":
                 target_position = 0.0
 
             # Execute trade if position change is significant
@@ -209,8 +296,10 @@ class BacktestEngine:
                     'position_delta': position_delta,
                     'new_position': current_position,
                     'cost': tc,
-                    'signal': output.signal,
-                    'curvature': output.curvature
+                    'signal': smoothed_signal,
+                    'curvature': curvature,
+                    'momentum': momentum_score,
+                    'regime': regime
                 })
 
             # Compute P&L
@@ -228,8 +317,8 @@ class BacktestEngine:
             # Store tracking
             positions[t] = current_position
             signals[t] = smoothed_signal
-            curvatures[t] = output.curvature
-            regimes[t] = output.regime
+            curvatures[t] = curvature
+            regimes[t] = regime
 
         # Create result series
         nav_series = pd.Series(nav, index=df.index, name='NAV')

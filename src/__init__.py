@@ -1,40 +1,54 @@
 """
-Syntropy Quant - Physics-based Quantitative Trading Framework
+Syntropy Quant - Physics-based Quantitative Trading Framework v4.0
+The Poincare Patch: Fixed NaNs, Negative Damping, Semi-Implicit Integrator
 
-A unified framework that treats financial markets as dissipative
-Hamiltonian dynamical systems operating on symplectic manifolds.
+Core innovations:
+- DSU (Dissipative Symplectic Unit): Semi-implicit symplectic integrator with negative damping
+- Gauge Field Kernel: Path-integral based future state estimation
+- Epsilon-stabilized features: NaN-safe numerical operations
 """
 
 from .core import (
     SyntropyQuantKernel,
-    GaugeFieldKernel,
     DissipativeSymplecticUnit,
     HamiltonianNetwork,
+    RiskManager,
+    KernelOutput,
+    GaugeFieldKernel,
+    GaugeConfig,
     RicciCurvatureFilter,
-    SurpriseFilter
+    SurpriseFilter,
 )
 
-from .backtest import BacktestEngine, BacktestResult, PerformanceMetrics
-from .data import DataFetcher, AssetCategory, FeatureBuilder
+from .data import DataFetcher, FeatureBuilder, AssetCategory, ASSET_UNIVERSE
 
-__version__ = '1.0.0'
+# Optional backtest imports (may not be needed for training)
+try:
+    from .backtest import BacktestEngine, BacktestResult, PerformanceMetrics
+    _backtest_available = True
+except ImportError:
+    _backtest_available = False
+
+__version__ = '4.0.0'
 
 __all__ = [
     # Core
     'SyntropyQuantKernel',
-    'GaugeFieldKernel',
     'DissipativeSymplecticUnit',
     'HamiltonianNetwork',
+    'RiskManager',
+    'KernelOutput',
+    'GaugeFieldKernel',
+    'GaugeConfig',
     'RicciCurvatureFilter',
     'SurpriseFilter',
 
-    # Backtest
-    'BacktestEngine',
-    'BacktestResult',
-    'PerformanceMetrics',
-
     # Data
     'DataFetcher',
-    'AssetCategory',
     'FeatureBuilder',
+    'AssetCategory',
+    'ASSET_UNIVERSE',
 ]
+
+if _backtest_available:
+    __all__.extend(['BacktestEngine', 'BacktestResult', 'PerformanceMetrics'])

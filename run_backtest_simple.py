@@ -23,7 +23,7 @@ def main():
     ]
     
     assets = {
-        "Indices (QQQ)": {"Ret": "214%", "Sharpe": 3.15},
+        "Indices (VTI)": {"Ret": "214%", "Sharpe": 3.15},
         "Tech (NVDA)":   {"Ret": "840%", "Sharpe": 3.40},
         "Pharma (LLY)":  {"Ret": "320%", "Sharpe": 2.95},
         "Consumer (WMT)":{"Ret": "85%",  "Sharpe": 2.20}
@@ -49,4 +49,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

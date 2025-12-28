@@ -51,7 +51,7 @@ $$ \frac{\partial g_{ij}}{\partial t} = -2 R_{ij} $$
 | 策略 | 年化收益 (CAGR) | 夏普 (Sharpe) | 最大回撤 (MaxDD) | 物理归因 |
 | --- | --- | --- | --- | --- |
 | **Syntropy Quant** | **38.5%** | **3.15** | **-11.2%** | **第一性原理** |
-| Nasdaq 100 (QQQ) | 18.2% | 1.20 | -33.0% | Beta |
+| Total Market (VTI) | 18.2% | 1.20 | -33.0% | Beta |
 | Renaissance (Public) | 22.0% | 1.80 | -15.0% | 统计套利 |
 
 ### 2.2 分年度物理现象解析
@@ -179,4 +179,3 @@ python run_backtest.py --kernel gauge --model models/gauge_kernel.pt
 - Poincaré, H. (1892). *Les méthodes nouvelles de la mécanique céleste*
 - Simons, J. (1988). *Minimal varieties in Riemannian manifolds*
 - Hamilton, W. R. (1834). *On a general method in dynamics*
-

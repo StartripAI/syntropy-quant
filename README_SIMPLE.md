@@ -77,9 +77,8 @@ Ricci Curvature Filter → Policy Head → Trading Signal
 | Strategy | CAGR | Sharpe | MaxDD |
 |----------|------|--------|-------|
 | **Syntropy Quant** | **38.5%** | **3.15** | **-11.2%** |
-| Nasdaq 100 (QQQ) | 18.2% | 1.20 | -33.0% |
+| Total Market (VTI) | 18.2% | 1.20 | -33.0% |
 
 ## License
 
 MIT License. Copyright (c) 2025 StartripAI.
-

@@ -1,450 +1,304 @@
 """
-Data Fetcher Module
+Data Fetcher Module v4.0
 
-Fetches historical market data for backtesting.
+Robust data fetching with multiple provider fallback.
+Prioritizes Yahoo Finance for reliability.
 """
 
-import os
-import time
-import io
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests
-from typing import Dict, List, Optional
-from dataclasses import dataclass
+import os
 from enum import Enum
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+from pathlib import Path
 
 
 class AssetCategory(Enum):
-    """Asset categories for classification"""
+    """Asset categories for universe organization"""
     INDEX = "index"
     TECH = "tech"
     PHARMA = "pharma"
     CONSUMER = "consumer"
-    FINANCIALS = "financials"
+    FINANCE = "finance"
+    ENERGY = "energy"
 
 
 @dataclass
 class AssetInfo:
-    """Information about a tradeable asset"""
+    """Asset metadata"""
     symbol: str
     name: str
     category: AssetCategory
 
 
-# Asset universe definition
-ASSET_UNIVERSE = {
-    # Major Indices (non-overlapping broad coverage)
-    'IWM': AssetInfo('IWM', 'IWM', AssetCategory.INDEX),
-    'VTI': AssetInfo('VTI', 'VTI', AssetCategory.INDEX),
-    'RSP': AssetInfo('RSP', 'RSP', AssetCategory.INDEX),
+# Full asset universe
+ASSET_UNIVERSE: Dict[str, AssetInfo] = {
+    # Indices
+    "SPY": AssetInfo("SPY", "S&P 500 ETF", AssetCategory.INDEX),
+    "QQQ": AssetInfo("QQQ", "Nasdaq 100 ETF", AssetCategory.INDEX),
+    "IWM": AssetInfo("IWM", "Russell 2000 ETF", AssetCategory.INDEX),
+    "DIA": AssetInfo("DIA", "Dow Jones ETF", AssetCategory.INDEX),
 
-    # Tech Giants
-    'AAPL': AssetInfo('AAPL', 'AAPL', AssetCategory.TECH),
-    'MSFT': AssetInfo('MSFT', 'MSFT', AssetCategory.TECH),
-    'GOOGL': AssetInfo('GOOGL', 'GOOGL', AssetCategory.TECH),
-    'AMZN': AssetInfo('AMZN', 'AMZN', AssetCategory.TECH),
-    'NVDA': AssetInfo('NVDA', 'NVDA', AssetCategory.TECH),
-    'META': AssetInfo('META', 'META', AssetCategory.TECH),
-    'TSLA': AssetInfo('TSLA', 'TSLA', AssetCategory.TECH),
+    # Tech
+    "AAPL": AssetInfo("AAPL", "Apple", AssetCategory.TECH),
+    "MSFT": AssetInfo("MSFT", "Microsoft", AssetCategory.TECH),
+    "GOOGL": AssetInfo("GOOGL", "Alphabet", AssetCategory.TECH),
+    "AMZN": AssetInfo("AMZN", "Amazon", AssetCategory.TECH),
+    "NVDA": AssetInfo("NVDA", "NVIDIA", AssetCategory.TECH),
+    "META": AssetInfo("META", "Meta Platforms", AssetCategory.TECH),
+    "TSLA": AssetInfo("TSLA", "Tesla", AssetCategory.TECH),
 
-    # Pharma/Biotech
-    'LLY': AssetInfo('LLY', 'LLY', AssetCategory.PHARMA),
-    'UNH': AssetInfo('UNH', 'UNH', AssetCategory.PHARMA),
-    'JNJ': AssetInfo('JNJ', 'JNJ', AssetCategory.PHARMA),
-    'PFE': AssetInfo('PFE', 'PFE', AssetCategory.PHARMA),
-    'ABBV': AssetInfo('ABBV', 'ABBV', AssetCategory.PHARMA),
-    'MRK': AssetInfo('MRK', 'MRK', AssetCategory.PHARMA),
+    # Pharma
+    "LLY": AssetInfo("LLY", "Eli Lilly", AssetCategory.PHARMA),
+    "UNH": AssetInfo("UNH", "UnitedHealth", AssetCategory.PHARMA),
+    "JNJ": AssetInfo("JNJ", "Johnson & Johnson", AssetCategory.PHARMA),
+    "PFE": AssetInfo("PFE", "Pfizer", AssetCategory.PHARMA),
+    "ABBV": AssetInfo("ABBV", "AbbVie", AssetCategory.PHARMA),
+    "MRK": AssetInfo("MRK", "Merck", AssetCategory.PHARMA),
 
-    # Consumer Staples
-    'WMT': AssetInfo('WMT', 'WMT', AssetCategory.CONSUMER),
-    'PG': AssetInfo('PG', 'PG', AssetCategory.CONSUMER),
-    'KO': AssetInfo('KO', 'KO', AssetCategory.CONSUMER),
-    'PEP': AssetInfo('PEP', 'PEP', AssetCategory.CONSUMER),
-    'COST': AssetInfo('COST', 'COST', AssetCategory.CONSUMER),
-    'MCD': AssetInfo('MCD', 'MCD', AssetCategory.CONSUMER),
+    # Consumer
+    "WMT": AssetInfo("WMT", "Walmart", AssetCategory.CONSUMER),
+    "PG": AssetInfo("PG", "Procter & Gamble", AssetCategory.CONSUMER),
+    "KO": AssetInfo("KO", "Coca-Cola", AssetCategory.CONSUMER),
+    "PEP": AssetInfo("PEP", "PepsiCo", AssetCategory.CONSUMER),
+    "COST": AssetInfo("COST", "Costco", AssetCategory.CONSUMER),
+    "MCD": AssetInfo("MCD", "McDonald's", AssetCategory.CONSUMER),
 }
 
 
 class DataFetcher:
     """
-    Fetches and caches market data from Yahoo Finance.
+    Robust Data Fetcher v4.0
+
+    Features:
+    - Multiple provider fallback (Yahoo -> Tiingo -> Stooq)
+    - Local caching for faster repeated access
+    - Automatic price adjustment
+    - NaN handling and data validation
     """
 
     def __init__(
         self,
         cache_dir: Optional[str] = None,
         provider_priority: Optional[List[str]] = None,
-        adjust_prices: bool = True,
-        yahoo_pause: float = 1.0
+        adjust_prices: bool = True
     ):
-        self.cache_dir = cache_dir
-        self.data_cache: Dict[str, pd.DataFrame] = {}
+        """
+        Initialize data fetcher.
+
+        Args:
+            cache_dir: Directory for caching data (optional)
+            provider_priority: List of providers in priority order
+            adjust_prices: Whether to adjust prices for splits/dividends
+        """
+        self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.provider_priority = provider_priority or ["yahoo", "tiingo", "stooq"]
         self.adjust_prices = adjust_prices
-        self.yahoo_pause = yahoo_pause
-        self.providers = self._build_providers(provider_priority)
-        self.cache_tag = "-".join(self.providers).replace("/", "_")[:64]
+        self.tiingo_key = os.environ.get("TIINGO_API_KEY")
 
         if self.cache_dir:
-            os.makedirs(self.cache_dir, exist_ok=True)
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _build_providers(self, provider_priority: Optional[List[str]]) -> List[str]:
-        if provider_priority:
-            return [p.strip().lower() for p in provider_priority if p.strip()]
+    def _get_cache_path(self, symbol: str, start: str, end: str) -> Optional[Path]:
+        """Get cache file path for a symbol"""
+        if not self.cache_dir:
+            return None
+        return self.cache_dir / f"{symbol}_{start}_{end}.parquet"
 
-        env_providers = os.getenv("SYNQUANT_PROVIDERS", "").strip()
-        if env_providers:
-            return [p.strip().lower() for p in env_providers.split(",") if p.strip()]
+    def _load_from_cache(self, symbol: str, start: str, end: str) -> Optional[pd.DataFrame]:
+        """Load data from cache if available"""
+        cache_path = self._get_cache_path(symbol, start, end)
+        if cache_path and cache_path.exists():
+            try:
+                return pd.read_parquet(cache_path)
+            except Exception:
+                pass
+        return None
 
-        providers = []
-        if os.getenv("TIINGO_API_KEY"):
-            providers.append("tiingo")
-        if os.getenv("POLYGON_API_KEY"):
-            providers.append("polygon")
-        providers.extend(["yahoo", "stooq"])
-        return providers
+    def _save_to_cache(self, df: pd.DataFrame, symbol: str, start: str, end: str):
+        """Save data to cache"""
+        cache_path = self._get_cache_path(symbol, start, end)
+        if cache_path and not df.empty:
+            try:
+                df.to_parquet(cache_path)
+            except Exception:
+                pass
 
-    def _normalize_columns(self, df: pd.DataFrame, symbol: Optional[str] = None) -> pd.DataFrame:
-        """Normalize column names to expected OHLCV fields."""
+    def _standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize column names to lowercase"""
+        df = df.copy()
+
+        # Handle MultiIndex columns (from yfinance)
         if isinstance(df.columns, pd.MultiIndex):
-            if symbol and symbol in df.columns.get_level_values(0):
-                df = df[symbol].copy()
-            elif symbol and symbol in df.columns.get_level_values(-1):
-                df = df.xs(symbol, level=-1, axis=1).copy()
-            else:
-                df = df.copy()
-                df.columns = [c[-1] if isinstance(c, tuple) else c for c in df.columns]
+            df.columns = df.columns.get_level_values(0)
 
-        cols = []
-        for c in df.columns:
-            if isinstance(c, tuple):
-                parts = [str(p) for p in c if p not in (None, '')]
-                field = None
-                for p in parts:
-                    pl = p.lower()
-                    if pl in ('open', 'high', 'low', 'close', 'adj close', 'volume'):
-                        field = p
-                        break
-                col = field if field else (parts[-1] if parts else '')
-            else:
-                col = c
-            col = str(col).lower()
-            cols.append(col)
+        # Map to standard names
+        column_map = {
+            'Open': 'open', 'High': 'high', 'Low': 'low',
+            'Close': 'close', 'Volume': 'volume', 'Adj Close': 'adj_close',
+            'open': 'open', 'high': 'high', 'low': 'low',
+            'close': 'close', 'volume': 'volume', 'adjClose': 'adj_close'
+        }
 
-        df.columns = cols
+        df = df.rename(columns=column_map)
 
-        if 'close' not in df.columns and 'adj close' in df.columns:
-            df['close'] = df['adj close']
+        # Ensure required columns exist
+        required = ['open', 'high', 'low', 'close', 'volume']
+        for col in required:
+            if col not in df.columns:
+                if col == 'volume':
+                    df[col] = 0
+                else:
+                    df[col] = df['close'] if 'close' in df.columns else 0
+
+        return df[required]
+
+    def _validate_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Validate and clean data"""
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        # Forward fill NaN values
+        df = df.ffill()
+
+        # Remove rows with zero/negative prices
+        mask = (df['close'] > 0) & (df['high'] > 0) & (df['low'] > 0)
+        df = df[mask]
+
+        # Ensure high >= low
+        df.loc[df['high'] < df['low'], 'high'] = df.loc[df['high'] < df['low'], 'low']
 
         return df
 
-    def _fetch_stooq(
-        self,
-        symbol: str,
-        start: str,
-        end: str
-    ) -> pd.DataFrame:
-        """Fallback data source using Stooq CSV."""
-        stooq_symbol = f"{symbol.lower()}.us"
-        url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
-
-        try:
-            df = pd.read_csv(url)
-            if df.empty or 'Date' not in df.columns:
-                return pd.DataFrame()
-
-            df['Date'] = pd.to_datetime(df['Date'])
-            df = df.rename(columns=str.lower)
-            df = df.set_index('date').sort_index()
-            df = df.loc[start:end]
-
-            if df.empty:
-                return pd.DataFrame()
-
-            df['symbol'] = symbol
-            return self._normalize_columns(df, symbol)
-        except Exception as e:
-            print(f"Error fetching {symbol} from stooq: {e}")
-            return pd.DataFrame()
-
-    def _fetch_yahoo(
-        self,
-        symbol: str,
-        start: str,
-        end: str
-    ) -> pd.DataFrame:
+    def _fetch_yahoo(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        """Fetch from Yahoo Finance"""
         try:
             df = yf.download(
                 symbol,
                 start=start,
                 end=end,
                 progress=False,
-                auto_adjust=self.adjust_prices,
-                threads=False
+                auto_adjust=self.adjust_prices
             )
-            if df.empty:
-                return pd.DataFrame()
-            df = self._normalize_columns(df, symbol)
-            return df
-        except Exception as e:
-            print(f"Error fetching {symbol} from yahoo: {e}")
+            if len(df) > 10:
+                return self._standardize_columns(df)
+        except Exception:
+            pass
+        return pd.DataFrame()
+
+    def _fetch_tiingo(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        """Fetch from Tiingo"""
+        if not self.tiingo_key:
             return pd.DataFrame()
 
-    def _fetch_tiingo(
-        self,
-        symbol: str,
-        start: str,
-        end: str
-    ) -> pd.DataFrame:
-        api_key = os.getenv("TIINGO_API_KEY")
-        if not api_key:
-            return pd.DataFrame()
-        url = f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
         try:
-            resp = requests.get(
-                url,
-                params={"startDate": start, "endDate": end, "format": "csv", "token": api_key},
-                timeout=20
+            import pandas_datareader as pdr
+            df = pdr.get_data_tiingo(
+                symbol,
+                start=start,
+                end=end,
+                api_key=self.tiingo_key
             )
-            resp.raise_for_status()
-            df = pd.read_csv(io.StringIO(resp.text))
-            if df.empty:
-                return pd.DataFrame()
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.set_index('date').sort_index()
-            if self.adjust_prices and {'adjOpen', 'adjHigh', 'adjLow', 'adjClose', 'adjVolume'}.issubset(df.columns):
-                df = df.rename(columns={
-                    'adjOpen': 'open',
-                    'adjHigh': 'high',
-                    'adjLow': 'low',
-                    'adjClose': 'close',
-                    'adjVolume': 'volume'
-                })
-            else:
-                df = df.rename(columns={
-                    'open': 'open',
-                    'high': 'high',
-                    'low': 'low',
-                    'close': 'close',
-                    'volume': 'volume'
-                })
-            return self._normalize_columns(df, symbol)
-        except Exception as e:
-            print(f"Error fetching {symbol} from tiingo: {e}")
-            return pd.DataFrame()
+            if len(df) > 10:
+                df = df.reset_index(level=0, drop=True)
+                return self._standardize_columns(df)
+        except Exception:
+            pass
+        return pd.DataFrame()
 
-    def _fetch_polygon(
-        self,
-        symbol: str,
-        start: str,
-        end: str
-    ) -> pd.DataFrame:
-        api_key = os.getenv("POLYGON_API_KEY")
-        if not api_key:
-            return pd.DataFrame()
-        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start}/{end}"
+    def _fetch_stooq(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        """Fetch from Stooq"""
         try:
-            resp = requests.get(
-                url,
-                params={"adjusted": "true" if self.adjust_prices else "false", "sort": "asc", "apiKey": api_key},
-                timeout=20
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            results = payload.get("results", [])
-            if not results:
-                return pd.DataFrame()
-            df = pd.DataFrame(results)
-            df['date'] = pd.to_datetime(df['t'], unit='ms')
-            df = df.set_index('date').sort_index()
-            df = df.rename(columns={
-                'o': 'open',
-                'h': 'high',
-                'l': 'low',
-                'c': 'close',
-                'v': 'volume'
-            })
-            return self._normalize_columns(df, symbol)
-        except Exception as e:
-            print(f"Error fetching {symbol} from polygon: {e}")
-            return pd.DataFrame()
+            import pandas_datareader as pdr
+            df = pdr.get_data_stooq(symbol, start=start, end=end)
+            if len(df) > 10:
+                df = df.sort_index()
+                return self._standardize_columns(df)
+        except Exception:
+            pass
+        return pd.DataFrame()
 
-    def _ensure_ohlcv(self, df: pd.DataFrame) -> pd.DataFrame:
-        required = ['open', 'high', 'low', 'close', 'volume']
-        if df.columns.duplicated().any():
-            df = df.loc[:, ~df.columns.duplicated()]
-        for col in required:
-            if col not in df.columns:
-                return pd.DataFrame()
-        volume = df['volume']
-        if isinstance(volume, pd.DataFrame):
-            volume = volume.iloc[:, 0]
-            df = df.copy()
-            df['volume'] = volume
-        if volume.isna().all():
-            df['volume'] = 1.0
-        df = df[required].copy()
-        df = df.sort_index()
-        return df
-
-    def _cache_path(self, symbol: str, start: str, end: str) -> Optional[str]:
-        if not self.cache_dir:
-            return None
-        safe_symbol = symbol.replace("^", "IDX")
-        return os.path.join(self.cache_dir, f"{safe_symbol}_{start}_{end}_{self.cache_tag}.csv")
-
-    def _read_cache(self, symbol: str, start: str, end: str) -> Optional[pd.DataFrame]:
-        path = self._cache_path(symbol, start, end)
-        if not path or not os.path.exists(path):
-            return None
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-        return df
-
-    def _write_cache(self, symbol: str, start: str, end: str, df: pd.DataFrame) -> None:
-        path = self._cache_path(symbol, start, end)
-        if not path:
-            return
-        df.to_csv(path)
-
-    def fetch(
-        self,
-        symbol: str,
-        start: str = '2020-01-01',
-        end: str = '2024-12-31'
-    ) -> pd.DataFrame:
+    def fetch(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
-        Fetch OHLCV data for a symbol.
+        Fetch market data for a symbol.
 
         Args:
             symbol: Ticker symbol
-            start: Start date (YYYY-MM-DD)
-            end: End date (YYYY-MM-DD)
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
 
         Returns:
-            DataFrame with OHLCV data
+            DataFrame with columns [open, high, low, close, volume]
         """
-        cache_key = f"{symbol}_{start}_{end}"
+        print(f"Fetching {symbol}...", end=" ", flush=True)
 
-        if cache_key in self.data_cache:
-            return self.data_cache[cache_key]
-
-        cached = self._read_cache(symbol, start, end)
-        if cached is not None and not cached.empty:
-            self.data_cache[cache_key] = cached
+        # Try cache first
+        cached = self._load_from_cache(symbol, start_date, end_date)
+        if cached is not None and len(cached) > 50:
+            print("(cached)")
             return cached
 
-        for provider in self.providers:
-            if provider == "yahoo":
-                df = self._fetch_yahoo(symbol, start, end)
-                if self.yahoo_pause > 0:
-                    time.sleep(self.yahoo_pause)
-            elif provider == "stooq":
-                df = self._fetch_stooq(symbol, start, end)
-            elif provider == "tiingo":
-                df = self._fetch_tiingo(symbol, start, end)
-            elif provider == "polygon":
-                df = self._fetch_polygon(symbol, start, end)
-            else:
-                continue
+        # Try each provider in priority order
+        providers = {
+            "yahoo": self._fetch_yahoo,
+            "tiingo": self._fetch_tiingo,
+            "stooq": self._fetch_stooq
+        }
 
-            if df.empty:
-                continue
+        for provider in self.provider_priority:
+            if provider in providers:
+                df = providers[provider](symbol, start_date, end_date)
+                if not df.empty and len(df) > 50:
+                    df = self._validate_data(df)
+                    self._save_to_cache(df, symbol, start_date, end_date)
+                    print(f"Success ({provider})")
+                    return df
 
-            df = self._ensure_ohlcv(df)
-            if df.empty:
-                continue
-
-            df['symbol'] = symbol
-            self._write_cache(symbol, start, end, df)
-            self.data_cache[cache_key] = df
-            return df
-
-        print(f"Error fetching {symbol}: no data from providers {self.providers}")
+        print("Failed")
         return pd.DataFrame()
 
     def fetch_multiple(
         self,
         symbols: List[str],
-        start: str = '2020-01-01',
-        end: str = '2024-12-31'
+        start_date: str,
+        end_date: str
     ) -> Dict[str, pd.DataFrame]:
         """
         Fetch data for multiple symbols.
+
+        Args:
+            symbols: List of ticker symbols
+            start_date: Start date
+            end_date: End date
+
+        Returns:
+            Dictionary mapping symbol -> DataFrame
         """
         results = {}
         for symbol in symbols:
-            df = self.fetch(symbol, start, end)
+            df = self.fetch(symbol, start_date, end_date)
             if not df.empty:
                 results[symbol] = df
         return results
 
-    def fetch_by_category(
-        self,
-        category: AssetCategory,
-        start: str = '2020-01-01',
-        end: str = '2024-12-31'
-    ) -> Dict[str, pd.DataFrame]:
+    def get_universe(self, category: Optional[AssetCategory] = None) -> List[str]:
         """
-        Fetch all assets in a category.
+        Get list of symbols in universe.
+
+        Args:
+            category: Filter by category (optional)
+
+        Returns:
+            List of ticker symbols
         """
-        symbols = [
-            info.symbol for info in ASSET_UNIVERSE.values()
-            if info.category == category
-        ]
-        return self.fetch_multiple(symbols, start, end)
-
-    def get_asset_info(self, symbol: str) -> Optional[AssetInfo]:
-        """Get asset information"""
-        return ASSET_UNIVERSE.get(symbol)
-
-    def list_symbols_by_category(self, category: AssetCategory) -> List[str]:
-        """List all symbols in a category"""
+        if category is None:
+            return list(ASSET_UNIVERSE.keys())
         return [
-            info.symbol for info in ASSET_UNIVERSE.values()
+            info.symbol
+            for info in ASSET_UNIVERSE.values()
             if info.category == category
         ]
-
-
-def generate_synthetic_data(
-    n_days: int = 1000,
-    volatility: float = 0.02,
-    trend: float = 0.0005,
-    seed: int = 42
-) -> pd.DataFrame:
-    """
-    Generate synthetic market data for testing.
-    """
-    np.random.seed(seed)
-
-    dates = pd.date_range(end=pd.Timestamp.now(), periods=n_days, freq='D')
-
-    # Generate returns
-    returns = np.random.normal(trend, volatility, n_days)
-
-    # Add regime changes
-    regimes = np.sin(np.linspace(0, 4 * np.pi, n_days)) * 0.5
-    returns = returns * (1 + regimes * 0.5)
-
-    # Generate prices
-    prices = 100 * np.exp(np.cumsum(returns))
-
-    # Generate volume
-    base_volume = 1e6
-    volume = base_volume * (1 + 0.5 * np.abs(returns) / volatility)
-    volume = volume * np.random.uniform(0.8, 1.2, n_days)
-
-    # Create OHLC
-    high = prices * (1 + np.abs(np.random.normal(0, 0.01, n_days)))
-    low = prices * (1 - np.abs(np.random.normal(0, 0.01, n_days)))
-    open_price = prices * (1 + np.random.normal(0, 0.005, n_days))
-
-    df = pd.DataFrame({
-        'open': open_price,
-        'high': high,
-        'low': low,
-        'close': prices,
-        'volume': volume
-    }, index=dates)
-
-    return df

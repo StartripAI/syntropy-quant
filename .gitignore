@@ -29,3 +29,6 @@ venv/
 *.log
 data/cache/
 results/
+data_cache/
+output/
+models/
