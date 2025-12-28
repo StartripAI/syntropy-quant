@@ -28,10 +28,12 @@ class FeatureBuilder:
         if len(df) < 30: return torch.empty(0)
         
         df = df.copy()
+        # Normalize column names to lowercase
+        df.columns = [c.lower() for c in df.columns]
         epsilon = 1e-8
         
         # 1. Log Returns (Scale Invariant)
-        close = df['Close'].values
+        close = df['close'].values
         log_ret = np.diff(np.log(close + epsilon), prepend=close[0])
         
         # 2. Volatility (Local Energy)
@@ -39,12 +41,12 @@ class FeatureBuilder:
         
         # 3. Order Flow / Momentum
         # Avoid High==Low singularity (CRITICAL FIX)
-        hl_range = df['High'].values - df['Low'].values
+        hl_range = df['high'].values - df['low'].values
         hl_range = np.maximum(hl_range, epsilon) 
         
         # Close Location Value
-        clv = ((close - df['Low'].values) - (df['High'].values - close)) / hl_range
-        flow = clv * np.log(df['Volume'].values + 1.0)
+        clv = ((close - df['low'].values) - (df['high'].values - close)) / hl_range
+        flow = clv * np.log(df['volume'].values + 1.0)
         
         # Normalize Flow (Z-Score)
         flow_mean = pd.Series(flow).rolling(20).mean().fillna(0).values

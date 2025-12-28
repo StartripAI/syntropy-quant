@@ -24,7 +24,9 @@ def train(args):
         if len(feat) == 0: continue
         
         # Label: Next Day Return
-        closes = df['Close'].values[20:]
+        # Normalize column names
+        df.columns = [c.lower() for c in df.columns]
+        closes = df['close'].values[20:]
         if len(closes) > len(feat): closes = closes[:len(feat)]
         ret = (closes[1:] - closes[:-1]) / closes[:-1]
         

@@ -34,7 +34,9 @@ def run(args):
         if len(feat) == 0: continue
         
         # Returns calculation
-        closes = df['Close'].values[20:]
+        # Normalize column names
+        df.columns = [c.lower() for c in df.columns]
+        closes = df['close'].values[20:]
         returns = (closes[1:] - closes[:-1]) / closes[:-1]
         
         with torch.no_grad():
