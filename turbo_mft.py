@@ -34,34 +34,38 @@ class SyntropyTurboMFT:
         self.kernel.eval()
         
         # Memory Buffers for each symbol
-        self.symbols = get_all_symbols()[:10] # Track top 10 for HFT demo
+        self.symbols = get_all_symbols()[:100] # Track up to 100 for HFT
         self.buffers = {s: RealTimeFeatureBuffer(window_size=60) for s in self.symbols}
         
         self.logger = logging.getLogger('TurboMFT')
         logging.basicConfig(level=logging.INFO)
 
-    async def handle_bar(self, data):
+    async def handle_trade(self, data):
         symbol = data.symbol
-        # Transform stream data to physics bar
-        bar = [data.open, data.high, data.low, data.close, data.volume]
+        # Trade data: price, size
+        # We synthesize a fast bar from trade stream
+        bar = [data.price, data.price, data.price, data.price, data.size]
         
         buffer = self.buffers[symbol]
         buffer.push(bar)
         
         feat = buffer.get_features()
         if feat is not None:
-            # Physics Inference
             res = self.kernel.process_step(feat)
+            action = abs(res.signal)
             
-            # Decision Logic (Turbo Thresholds)
-            if res.signal > 0.05: # High frequency long
-                await self.execute_trade(symbol, "buy", res.confidence)
-            elif res.signal < -0.05: # High frequency short
-                await self.execute_trade(symbol, "sell", res.confidence)
+            # Real-time dashboard output
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {symbol:<5} | Price: {data.price:>7.2f} | Action: {action:.4f} | Curve: {res.curvature:.4f}", flush=True)
+
+            if action > 0.02: 
+                await self.execute_trade(symbol, "buy" if res.signal > 0 else "sell", res.confidence)
 
     async def execute_trade(self, symbol, side, confidence):
         try:
-            qty = max(1, int(100 * confidence))
+            # Max $5000 per trade for high frequency
+            base_qty = 10 
+            qty = max(1, int(base_qty * (confidence**2))) 
+            
             order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
             
             request = MarketOrderRequest(
@@ -77,9 +81,9 @@ class SyntropyTurboMFT:
             self.logger.error(f"Execution failed: {e}")
 
     def run(self):
-        self.logger.info(f">>> SYNTROPY TURBO MFT STARTING: Monitoring {len(self.symbols)} assets <<<")
-        # Subscribe to Minute Bars
-        self.stream.subscribe_bars(self.handle_bar, *self.symbols)
+        self.logger.info(f">>> SYNTROPY TURBO TICK-STREAM STARTING: Monitoring {len(self.symbols)} assets <<<")
+        # Subscribe to Real-time Trades (Much faster than Bars)
+        self.stream.subscribe_trades(self.handle_trade, *self.symbols)
         self.stream.run()
 
 if __name__ == "__main__":

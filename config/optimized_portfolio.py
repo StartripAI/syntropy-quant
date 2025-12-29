@@ -19,9 +19,10 @@ BLACKLIST = ['UNH', 'TGT', 'PFE', 'BMY', 'MRK', 'INTC']
 PORTFOLIO = {
     'core': ['QQQ', 'VOO', 'VTI', 'SPY', 'IWM', 'DIA'],
     'tech': ['GOOGL', 'AMZN', 'META', 'MSFT', 'NVDA', 'AAPL', 'TSLA'],
-    'semis': ['AMAT', 'LRCX', 'AVGO', 'QCOM', 'AMD', 'ASML'],
-    'finance': ['JPM', 'GS', 'BRK-B', 'V', 'MA'],
-    'consumer': ['WMT', 'COST', 'PEP', 'KO'],
+    'semis': ['AMAT', 'LRCX', 'AVGO', 'QCOM', 'AMD', 'ASML', 'SMH'],
+    'meme': ['GME', 'AMC', 'PLTR', 'SOFI', 'COIN', 'HOOD', 'MSTR', 'ROKU', 'SNAP', 'NIO', 'BABA', 'BIDU'],
+    'degen': ['TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'LABU', 'LABD', 'UVXY', 'BITO', 'XBI'],
+    'growth': ['SNOW', 'U', 'DKNG', 'PENN', 'UPST', 'AFRM', 'LCID', 'RIVN', 'AI'],
 }
 
 # Trading parameters (Regime-Aware)
