@@ -30,21 +30,28 @@ def initialize_v5_model(save_path="models/gauge_kernel_v5.pt"):
         df = fetcher.fetch(s, "2023-01-01", "2024-12-01")
         if df.empty: continue
         feat = builder.build_features(df)
+        if len(feat) == 0: continue
         
         # Labels: return sign
         closes = df['close'].values if 'close' in df.columns else df['Close'].values
-        ret = np.diff(closes) / closes[:-1]
+        ret = np.diff(closes) / (closes[:-1] + 1e-8)
+        
+        # Classify returns
         labels = np.ones(len(ret))
         labels[ret > 0.002] = 2
         labels[ret < -0.002] = 0
         
-        # Align
-        warmup = 60
-        X = feat[warmup:-1]
-        Y = labels[warmup:]
+        # Slicing for alignment
+        # feat starts from index 50 (due to build_features internals)
+        # So we need to align labels to start from index 50 too.
+        # Plus any additional warmup
+        Y = labels[50:]
+        X = feat[:len(Y)] # Match sizes
         
-        data_list.append(torch.tensor(X, dtype=torch.float32))
-        target_list.append(torch.tensor(Y, dtype=torch.long))
+        # Final safety check
+        if len(X) > 10:
+            data_list.append(torch.tensor(X, dtype=torch.float32))
+            target_list.append(torch.tensor(Y, dtype=torch.long))
     
     if not data_list:
         print("No data found. Aborting.")
@@ -61,8 +68,10 @@ def initialize_v5_model(save_path="models/gauge_kernel_v5.pt"):
     model.train()
     for epoch in range(50):
         optimizer.zero_grad()
-        logits, free_energy, _ = model(X_train)
-        loss = criterion(logits, Y_train) + free_energy.mean() * 0.05
+        out = model(X_train)
+        logits = out['logits']
+        curvature = out['curvature']
+        loss = criterion(logits, Y_train) + curvature.mean() * 0.05
         loss.backward()
         optimizer.step()
         if (epoch+1) % 10 == 0:

@@ -37,9 +37,10 @@ class FeatureBuilderV5:
                 chunk = series[i-window:i]
                 r = np.max(chunk) - np.min(chunk) + eps
                 s = np.std(chunk) + eps
-                if s < 1e-9: h_vals[i] = 0.5
-                else: h = np.log(r/s) / np.log(window)
-                    h_vals[i] = h
+                if s < 1e-9:
+                    h_vals[i] = 0.5
+                else:
+                    h_vals[i] = np.log(r/s) / np.log(window)
             return np.clip(h_vals, 0, 1)
         
         hurst = rolling_hurst(close)

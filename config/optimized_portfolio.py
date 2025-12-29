@@ -56,8 +56,21 @@ def compute_hrp_weights(cov: np.ndarray, symbols: List[str]) -> Dict[str, float]
         return {symbols[0]: 1.0} if symbols else {}
         
     # 1. Clustering
-    corr = cov / np.outer(np.sqrt(np.diag(cov)), np.sqrt(np.diag(cov)))
-    dist = np.sqrt(0.5 * (1 - corr))
+    vols = np.sqrt(np.diag(cov))
+    vols[vols < 1e-8] = 1e-8 # Prevent division by zero
+    corr = cov / np.outer(vols, vols)
+    corr = np.clip(corr, -1, 1) # Ensure within range
+    corr[np.isnan(corr)] = 0
+    np.fill_diagonal(corr, 1)
+    
+    dist = np.sqrt(np.maximum(0, 0.5 * (1 - corr)))
+    dist[np.isnan(dist)] = 0
+    
+    # Check for finite values
+    if not np.all(np.isfinite(dist)):
+        # Fallback if distance matrix is still bad
+        return {s: 1.0/len(symbols) for s in symbols}
+
     link = sch.linkage(dist, 'single')
     sort_idx = sch.leaves_list(link)
     sorted_symbols = [symbols[i] for i in sort_idx]

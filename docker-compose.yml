@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  trading-system:
+    build: .
+    container_name: syntropy-quant-live
+    restart: always
+    env_file: .env
+    volumes:
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./data_cache:/app/data_cache
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10mb"
+        max-file: "3"

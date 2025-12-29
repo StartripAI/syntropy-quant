@@ -131,7 +131,7 @@ class TradingSystem:
         symbols = get_all_symbols()
         data = {}
         for s in symbols[:15]: # Limit for performance
-            df = self.fetcher.fetch(s, (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d"), 
+            df = self.fetcher.fetch(s, (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"), 
                                      datetime.now().strftime("%Y-%m-%d"))
             if not df.empty:
                 prices = df['close'].values if 'close' in df.columns else df['Close'].values
@@ -155,7 +155,7 @@ class TradingSystem:
         for symbol in symbols:
             try:
                 df = self.fetcher.fetch(symbol, 
-                                        (datetime.now() - timedelta(days=50)).strftime("%Y-%m-%d"),
+                                        (datetime.now() - timedelta(days=100)).strftime("%Y-%m-%d"),
                                         datetime.now().strftime("%Y-%m-%d"))
                 if df.empty or len(df) < 30: continue
 

@@ -23,20 +23,28 @@ def train(args):
         feat = FeatureBuilder().build(df)
         if len(feat) == 0: continue
         
+        # Data alignment
+        feat = feat[20:] # Align with closes from index 20
+        
         # Label: Next Day Return
-        # Normalize column names
-        df.columns = [c.lower() for c in df.columns]
-        closes = df['close'].values[20:]
-        if len(closes) > len(feat): closes = closes[:len(feat)]
-        ret = (closes[1:] - closes[:-1]) / closes[:-1]
+        closes = df['close'].values if 'close' in df.columns else df['Close'].values
+        closes = closes[20:]
+        ret = (closes[1:] - closes[:-1]) / (closes[:-1] + 1e-8)
         
         # 3-Class Labels
         labels = np.ones(len(ret))
         labels[ret > 0.001] = 2 # Long
         labels[ret < -0.001] = 0 # Short
         
-        data_list.append(feat[:-1])
-        target_list.append(torch.tensor(labels, dtype=torch.long))
+        # Final alignment: feat[i] predicts ret[i] (which is price[i+1]/price[i])
+        X_sym = feat[:-1]
+        Y_sym = torch.tensor(labels, dtype=torch.long)
+        
+        if len(X_sym) == len(Y_sym):
+            data_list.append(X_sym)
+            target_list.append(Y_sym)
+        else:
+            print(f"Skipping {sym} due to mismatch: X={len(X_sym)}, Y={len(Y_sym)}")
         
     if not data_list:
         print("No data available.")
